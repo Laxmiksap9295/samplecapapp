@@ -1,0 +1,148 @@
+_schema-version: 3.3.0
+ID: samplecapapp
+version: 1.0.0
+description: "A simple CAP project."
+parameters:
+  enable-parallel-deployments: true
+  deploy_mode: html5-repo
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm install
+        - npx cds build --production
+        - mkdir -p resources
+modules:
+  - name: samplecapapp-srv
+    type: nodejs
+    path: gen/srv
+    parameters:
+      buildpack: nodejs_buildpack
+      readiness-health-check-type: http
+      readiness-health-check-http-endpoint: /health
+    build-parameters:
+      builder: npm
+    provides:
+      - name: srv-api # required by consumers of CAP services (e.g. approuter)
+        properties:
+          srv-url: ${default-url}
+    requires:
+      - name: samplecapapp-db
+      - name: samplecapapp-auth
+      - name: samplecapapp-destination
+
+  - name: samplecapapp-db-deployer
+    type: hdb
+    path: gen/db
+    parameters:
+      buildpack: nodejs_buildpack
+    requires:
+      - name: samplecapapp-db
+
+  - name: samplecapapp-app-deployer
+    type: com.sap.application.content
+    path: .
+    requires:
+      - name: samplecapapp-html5-repo-host
+        parameters:
+          content-target: true
+    build-parameters:
+      build-result: resources/
+      requires:
+        - name: samplecapappadminbooks
+          artifacts:
+            - admin-books.zip
+          target-path: resources/
+  - name: samplecapappadminbooks
+    type: html5
+    path: app/admin-books
+    build-parameters:
+      build-result: dist
+      builder: custom
+      commands:
+        - npm install
+        - npm run build
+        - npm ci
+      supported-platforms: []
+  - name: samplecapapp-destinations
+    type: com.sap.application.content
+    requires:
+      - name: samplecapapp-auth
+        parameters:
+          service-key:
+            name: samplecapapp-auth-key
+      - name: samplecapapp-html5-repo-host
+        parameters:
+          service-key:
+            name: samplecapapp-html5-repo-host-key
+      - name: srv-api
+      - name: samplecapapp-destination
+        parameters:
+          content-target: true
+    build-parameters:
+      no-source: true
+    parameters:
+      content:
+        instance:
+          existing_destinations_policy: update
+          destinations:
+            - Name: samplecapapp-html5-repository
+              ServiceInstanceName: samplecapapp-html5-repo-host
+              ServiceKeyName: samplecapapp-html5-repo-host-key
+              sap.cloud.service: samplecapapp.service
+            - Name: samplecapapp-auth
+              Authentication: OAuth2UserTokenExchange
+              ServiceInstanceName: samplecapapp-auth
+              ServiceKeyName: samplecapapp-auth-key
+              sap.cloud.service: samplecapapp.service
+
+resources:
+  - name: samplecapapp-db
+    type: com.sap.xs.hdi-container
+    parameters:
+      service: hana
+      service-plan: hdi-shared
+  - name: samplecapapp-html5-repo-host
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: html5-apps-repo
+      service-plan: app-host
+  - name: samplecapapp-auth
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+      config:
+        xsappname: samplecapapp-${org}-${space}
+        tenant-mode: dedicated
+  - name: samplecapapp-destination
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+      config:
+        HTML5Runtime_enabled: true
+        init_data:
+          instance:
+            existing_destinations_policy: update
+            destinations:
+              - Name: samplecapapp-srv-api
+                URL: ~{srv-api/srv-url}
+                Authentication: NoAuthentication
+                Type: HTTP
+                ProxyType: Internet
+                HTML5.ForwardAuthToken: true
+                HTML5.DynamicDestination: true
+              - Name: ui5
+                URL: https://ui5.sap.com
+                Authentication: NoAuthentication
+                Type: HTTP
+                ProxyType: Internet
+    requires:
+      - name: srv-api
+        group: destinations
+        properties:
+          name: srv-api # must be used in xs-app.json as well
+          url: ~{srv-url}
+          forwardAuthToken: true
